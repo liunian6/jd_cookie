@@ -1,143 +1,165 @@
-package jd_cookie
+package qinglong
 
 import (
+	"errors"
 	"fmt"
-	"regexp"
 	"strings"
+	"time"
 
 	"github.com/cdle/sillyGirl/core"
-	"github.com/cdle/sillyGirl/develop/qinglong"
 )
 
-func initEnv() {
-	core.AddCommand("jd", []core.Function{
-		{
-			Rules: []string{`find ?`},
-			Admin: true,
-			Handle: func(s core.Sender) interface{} {
-				a := s.Get()
-				envs, err := qinglong.GetEnvs("JD_COOKIE")
-				if err != nil {
-					return err
-				}
-				if len(envs) == 0 {
-					return "青龙未设置变量。"
-				}
-				ncks := []qinglong.Env{}
-				if s := strings.Split(a, "-"); len(s) == 2 {
-					for i := range envs {
-						if i+1 >= core.Int(s[0]) && i+1 <= core.Int(s[1]) {
-							ncks = append(ncks, envs[i])
-						}
-					}
-				} else if x := regexp.MustCompile(`^[\s\d,]+$`).FindString(a); x != "" {
-					xx := regexp.MustCompile(`(\d+)`).FindAllStringSubmatch(a, -1)
-					for i := range envs {
-						for _, x := range xx {
-							if fmt.Sprint(i+1) == x[1] {
-								ncks = append(ncks, envs[i])
-							}
-						}
+type EnvResponse struct {
+	Code int   `json:"code"`
+	Data []Env `json:"data"`
+}
 
+type Env struct {
+	Value     string `json:"value,omitempty"`
+	ID        string `json:"_id,omitempty"`
+	Status    int    `json:"status,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Remarks   string `json:"remarks,omitempty"`
+	Timestamp string `json:"timestamp,omitempty"`
+	Created   int64  `json:"created,omitempty"`
+}
+
+func GetEnv(id string) (*Env, error) {
+	envs, err := GetEnvs("")
+	if err != nil {
+		return nil, err
+	}
+	for _, env := range envs {
+		if env.ID == id {
+			return &env, nil
+		}
+	}
+	return nil, nil
+}
+
+func GetEnvs(searchValue string) ([]Env, error) {
+	er := EnvResponse{}
+	if err := Config.Req(ENVS, &er, "?searchValue="+searchValue); err != nil {
+		return nil, err
+	}
+	return er.Data, nil
+}
+
+func GetEnvss(searchValue string) ([]Env, error) {
+	er := EnvResponse{}
+	if err := Config.Req(ENVS, &er, "?searchValue="+searchValue); err != nil {
+		return nil, err
+	}
+	return er.Data, nil
+}
+
+func SetEnv(e Env) error {
+	envs, err := GetEnvs("")
+	if err != nil {
+		return err
+	}
+	for _, env := range envs {
+		if env.Name == e.Name {
+			if e.Remarks != "" {
+				env.Remarks = e.Remarks
+			}
+			if e.Value != "" {
+				env.Value = e.Value
+			}
+			if e.Name != "" {
+				env.Name = e.Name
+			}
+			return Config.Req(PUT, ENVS, env)
+		}
+	}
+	return AddEnv(e)
+}
+
+func UdpEnv(env Env) error {
+	env.Created = 0
+	env.Timestamp = ""
+	return Config.Req(PUT, ENVS, env)
+}
+
+func ModEnv(e Env) error {
+	envs, err := GetEnvs("")
+	if err != nil {
+		return err
+	}
+	for _, env := range envs {
+		if env.ID == e.ID {
+			if e.Remarks != "" {
+				env.Remarks = e.Remarks
+			}
+			if e.Value != "" {
+				env.Value = e.Value
+			}
+			if e.Name != "" {
+				env.Name = e.Name
+			}
+			env.Created = 0
+			env.Timestamp = ""
+			return Config.Req(PUT, ENVS, env)
+		}
+	}
+	return errors.New("找不到环境变量")
+}
+
+func AddEnv(e Env) error {
+	e.Created = 0
+	e.Timestamp = ""
+	return Config.Req(POST, ENVS, []Env{e})
+}
+
+func RemEnv(e *Env) error {
+	return Config.Req(DELETE, ENVS, []byte(`["`+e.ID+`"]`))
+}
+
+func initEnv() {
+	core.AddCommand("ql", []core.Function{
+		{
+			Rules: []string{`cookie status`},
+			Admin: true,
+			Handle: func(_ core.Sender) interface{} {
+				type Count struct {
+					Total        int
+					Disable      int
+					TodayCreate  int
+					TodayDisable int
+					TodayUpdate  int
+				}
+				envs, err := GetEnvs("")
+				if err != nil {
+					return err
+				}
+				today := time.Now()
+				var cookies = map[string]*Count{}
+				for _, env := range envs {
+					var c *Count
+					if _, ok := cookies[env.Name]; !ok {
+						cookies[env.Name] = &Count{}
 					}
-				} else if a != "" {
-					a = strings.Replace(a, " ", "", -1)
-					for i := range envs {
-						if strings.Contains(envs[i].Value, a) || strings.Contains(envs[i].Remarks, a) || strings.Contains(envs[i].ID, a) {
-							ncks = append(ncks, envs[i])
+					c = cookies[env.Name]
+					c.Total++
+					if strings.Contains(env.Timestamp, fmt.Sprintf(`%s %s`, today.Month().String()[0:3], today.Format("02 2006"))) {
+						if env.Status != 0 {
+							c.TodayDisable++
+						} else {
+							c.TodayUpdate++
 						}
 					}
-				}
-				if len(ncks) == 0 {
-					return "没有匹配的变量。"
-				}
-				msg := []string{}
-				for _, ck := range ncks {
-					status := "已启用"
-					if ck.Status != 0 {
-						status = "已禁用"
+					if env.Status != 0 {
+						c.Disable++
 					}
-					msg = append(msg, strings.Join([]string{
-						fmt.Sprintf("编号：%v", ck.ID),
-						fmt.Sprintf("备注：%v", ck.Remarks),
-						fmt.Sprintf("状态：%v", status),
-						fmt.Sprintf("pin值：%v", core.FetchCookieValue(ck.Value, "pt_pin")),
-					}, "\n"))
-				}
-				return strings.Join(msg, "\n\n")
-			},
-		},
-		{
-			Rules: []string{`exchange ? ?`},
-			Admin: true,
-			Handle: func(s core.Sender) interface{} {
-				ac1 := s.Get(0)
-				ac2 := s.Get(1)
-				envs, err := qinglong.GetEnvs("JD_COOKIE")
-				if err != nil {
-					return err
-				}
-				if len(envs) < 2 {
-					return "数目小于，无需交换顺序。"
-				}
-				toe := []qinglong.Env{}
-				for _, env := range envs {
-					if env.ID == ac1 || env.ID == ac2 {
-						toe = append(toe, env)
+					if time.Unix(env.Created, 0).Format("2006-01-02") == today.Format("2006-01-02") {
+						c.TodayCreate++
 					}
 				}
-				if len(toe) < 2 {
-					return "找不到对应的变量，无法交换顺序。"
+				ss := []string{}
+				for name, c := range cookies {
+					ss = append(ss, fmt.Sprintf(`%s 今日新增%d，今日更新%d，今日失效%d，总数%d，有效%d，无效%d`, name, c.TodayCreate, c.TodayUpdate, c.TodayDisable, c.Total, c.Total-c.Disable, c.Disable))
 				}
-				toe[0].ID, toe[1].ID = toe[1].ID, toe[0].ID
-				toe[0].Timestamp = ""
-				toe[1].Timestamp = ""
-				toe[0].Created = 0
-				toe[1].Created = 0
-				if err := qinglong.Config.Req(qinglong.PUT, qinglong.ENVS, toe[0]); err != nil {
-					return err
-				}
-				if err := qinglong.Config.Req(qinglong.PUT, qinglong.ENVS, toe[1]); err != nil {
-					return err
-				}
-				return "交换成功"
-			},
-		},
-		{
-			Rules: []string{`enable ?`},
-			Admin: true,
-			Handle: func(s core.Sender) interface{} {
-				if err := qinglong.Config.Req(qinglong.PUT, qinglong.ENVS, "/enable", []byte(`["`+s.Get()+`"]`)); err != nil {
-					return err
-				}
-				return "操作成功"
-			},
-		},
-		{
-			Rules: []string{`disable ?`},
-			Admin: true,
-			Handle: func(s core.Sender) interface{} {
-				if err := qinglong.Config.Req(qinglong.PUT, qinglong.ENVS, "/disable", []byte(`["`+s.Get()+`"]`)); err != nil {
-					return err
-				}
-				return "操作成功"
-			},
-		},
-		{
-			Rules: []string{`remark ? ?`},
-			Admin: true,
-			Handle: func(s core.Sender) interface{} {
-				env, err := qinglong.GetEnv(s.Get(0))
-				if err != nil {
-					return err
-				}
-				env.Remarks = s.Get(1)
-				env.Created = 0
-				env.Timestamp = ""
-				if err := qinglong.Config.Req(qinglong.PUT, qinglong.ENVS, *env); err != nil {
-					return err
-				}
-				return "操作成功"
+				return strings.Join(ss, "\n")
 			},
 		},
 	})
